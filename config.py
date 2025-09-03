@@ -192,7 +192,7 @@ BATCH_SIZE = 128
 # Description: 学习器在开始训练前，经验回放缓冲区必须达到的经验数量。
 # Role: 确保在训练开始时，数据具有一定的多样性，避免早期过拟合。
 # Type: int
-MIN_BUFFER_SIZE_FOR_TRAINING = 2000
+MIN_BUFFER_SIZE_FOR_TRAINING = 5000
 
 # GAMMA: 折扣因子 (Discount Factor)
 # Description: 在计算累积回报时，未来奖励的权重。

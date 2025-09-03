@@ -92,78 +92,77 @@ class Validator:
             json.dump(log_data, f, indent=4)
 
     def evaluate(self, model, device, curriculum_stage, global_step):
-        """在当前课程对应的验证集上评估模型，并记录详细日志。"""
+        """
+        在所有已学习课程对应的验证集上评估模型，并记录详细日志。
+        返回一个字典，键为课程阶段，值为该阶段的详细评估结果。
+        """
         model.eval()
-        validation_set = self.val_sets[curriculum_stage]
         mcts_evaluator = MCTS(model, device)
-
-        agent_makespans, heft_makespans, ilp_makespans = [], [], []
-        win_count, optimal_count = 0, 0
-
-        per_instance_results = []
-
-        for instance in validation_set:
-            dag, k, proc_speeds, m_heft, m_ilp = (
-                instance['dag'], instance['k'], instance['proc_speeds'],
-                instance['m_heft'], instance['m_ilp']
-            )
-
-            normalizer = Normalizer(dag, m_heft, proc_speeds)
-            env = SchedulingEnv(dag.copy(), k, proc_speeds, normalizer=normalizer)
-            _ = env.reset()
-            done = False
-
-            while not done:
-                if not np.any(env.get_action_mask()): break
-                pi, _ = mcts_evaluator.search(env, MCTS_SIMULATIONS, env.heft_makespan, dirichlet_epsilon=0.0)
-                if not pi: break
-                best_action = max(pi, key=pi.get)
-                _, _, done = env.step(best_action)
-
-            m_agent = env.get_makespan()
-            agent_makespans.append(m_agent)
-            heft_makespans.append(m_heft)
-
-            if m_agent < m_heft: win_count += 1
-            if m_ilp > 0:
-                ilp_makespans.append(m_ilp)
-                if np.isclose(m_agent, m_ilp): optimal_count += 1
-
-            per_instance_results.append({
-                'id': instance['id'],
-                'agent_makespan': round(m_agent, 2),
-                'heft_makespan': round(m_heft, 2),
-                'ilp_makespan': round(m_ilp, 2) if m_ilp > 0 else -1,
-                'slr': round(m_agent / m_heft, 4) if m_heft > 0 else 1.0,
-                'gap': round(m_agent / m_ilp, 4) if m_ilp > 0 else -1.0
-            })
-
-        log_entry = {
+        all_stages_results = {}
+        full_log_entry = {
             'global_step': global_step,
-            'curriculum_stage': curriculum_stage,
-            'results': per_instance_results
+            'current_learning_stage': curriculum_stage,
+            'evaluations': {}
         }
-        self._append_log(log_entry)
 
-        avg_agent_makespan = np.mean(agent_makespans) if agent_makespans else 0.0
-        avg_heft_makespan = np.mean(heft_makespans) if heft_makespans else 0.0
-        avg_ilp_makespan = np.mean(ilp_makespans) if ilp_makespans else -1.0
+        # 评估所有已达到和已超过的课程
+        for stage_to_eval in range(curriculum_stage + 1):
+            validation_set = self.val_sets[stage_to_eval]
+            agent_makespans, heft_makespans, ilp_makespans = [], [], []
+            win_count = 0
+            per_instance_results = []
 
-        slr_list = [a / h for a, h in zip(agent_makespans, heft_makespans) if h > 0]
-        avg_slr = np.mean(slr_list) if slr_list else 1.0
+            for instance in validation_set:
+                dag, k, proc_speeds, m_heft, m_ilp = (
+                    instance['dag'], instance['k'], instance['proc_speeds'],
+                    instance['m_heft'], instance['m_ilp']
+                )
 
-        gap_list = [a / i for a, i in zip(agent_makespans, ilp_makespans) if i > 0]
-        avg_gap = np.mean(gap_list) if gap_list else -1.0
+                normalizer = Normalizer(dag, m_heft, proc_speeds)
+                env = SchedulingEnv(dag.copy(), k, proc_speeds, normalizer=normalizer)
+                _ = env.reset()
+                done = False
 
-        win_rate = win_count / len(validation_set) if validation_set else 0.0
-        optimality_rate = optimal_count / len(ilp_makespans) if ilp_makespans else -1.0
+                while not done:
+                    if not np.any(env.get_action_mask()): break
+                    pi, _ = mcts_evaluator.search(env, MCTS_SIMULATIONS, env.heft_makespan, dirichlet_epsilon=0.0)
+                    if not pi: break
+                    best_action = max(pi, key=pi.get)
+                    _, _, done = env.step(best_action)
 
-        return {
-            "Avg_Makespan_Agent": avg_agent_makespan,
-            "Avg_Makespan_HEFT": avg_heft_makespan,
-            "Avg_Makespan_ILP": avg_ilp_makespan,
-            "Avg_SLR_vs_HEFT": avg_slr,
-            "Win_Rate_vs_HEFT": win_rate,
-            "Avg_Optimality_Gap": avg_gap,
-            "Optimality_Rate": optimality_rate
-        }
+                m_agent = env.get_makespan()
+                agent_makespans.append(m_agent)
+                heft_makespans.append(m_heft)
+                if m_agent < m_heft: win_count += 1
+                if m_ilp > 0: ilp_makespans.append(m_ilp)
+
+                per_instance_results.append({
+                    'id': instance['id'],
+                    'agent_makespan': round(m_agent, 2),
+                    'heft_makespan': round(m_heft, 2),
+                    'ilp_makespan': round(m_ilp, 2) if m_ilp > 0 else -1,
+                })
+
+            full_log_entry['evaluations'][f'C{stage_to_eval}'] = per_instance_results
+
+            # --- 计算更全面的统计指标 ---
+            slr_list = np.array([a / h for a, h in zip(agent_makespans, heft_makespans) if h > 0])
+            gap_list = np.array([a / i for a, i in zip(agent_makespans, ilp_makespans) if i > 0])
+
+            all_stages_results[stage_to_eval] = {
+                "Avg_Makespan_Agent": np.mean(agent_makespans) if agent_makespans else 0.0,
+                "Avg_Makespan_HEFT": np.mean(heft_makespans) if heft_makespans else 0.0,
+                "Avg_Makespan_ILP": np.mean(ilp_makespans) if ilp_makespans else -1.0,
+                "Win_Rate_vs_HEFT": win_count / len(validation_set) if validation_set else 0.0,
+                # SLR Metrics
+                "Avg_SLR_vs_HEFT": np.mean(slr_list) if slr_list.size > 0 else 1.0,
+                "Std_SLR_vs_HEFT": np.std(slr_list) if slr_list.size > 0 else 0.0,
+                "Median_SLR_vs_HEFT": np.median(slr_list) if slr_list.size > 0 else 1.0,
+                # Optimality Gap Metrics
+                "Avg_Optimality_Gap": np.mean(gap_list) if gap_list.size > 0 else -1.0,
+                "Std_Optimality_Gap": np.std(gap_list) if gap_list.size > 0 else 0.0,
+                "Median_Optimality_Gap": np.median(gap_list) if gap_list.size > 0 else -1.0,
+            }
+
+        self._append_log(full_log_entry)
+        return all_stages_results

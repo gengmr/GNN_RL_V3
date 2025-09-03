@@ -113,7 +113,7 @@ def actor_process(actor_id, data_queue, curriculum_queue, stop_event,
             pi, _ = mcts.search(env, config.MCTS_SIMULATIONS, env.heft_makespan)
 
             if not pi:
-                break # MCTS未返回有效策略
+                break  # MCTS未返回有效策略
 
             # 保存状态和MCTS输出的策略
             full_pi = np.zeros((env.num_tasks, env.k))
@@ -159,16 +159,15 @@ def inference_worker(model_dict, request_queue, result_dict, stop_event, model_p
     try:
         cpu_state_dict = model_dict.copy()
         if cpu_state_dict:
-             model.load_state_dict(cpu_state_dict)
+            model.load_state_dict(cpu_state_dict)
     except Exception as e:
         print(f"[INFERENCE WORKER] Initial model load failed: {e}")
-
 
     while not stop_event.is_set():
         # --- 安全地获取最新的模型状态 ---
         # model_dict.copy() 是原子操作, 保证了获取到的是一个完整的状态快照
         cpu_state_dict = model_dict.copy()
-        if not cpu_state_dict: # 如果learner还没来得及放入模型，则稍等
+        if not cpu_state_dict:  # 如果learner还没来得及放入模型，则稍等
             time.sleep(0.1)
             continue
         model.load_state_dict(cpu_state_dict)
@@ -181,7 +180,7 @@ def inference_worker(model_dict, request_queue, result_dict, stop_event, model_p
                 requests.append(req)
         except queue.Empty:
             if not requests:
-                time.sleep(0.001) # 队列为空时短暂休眠，避免CPU空转
+                time.sleep(0.001)  # 队列为空时短暂休眠，避免CPU空转
                 continue
 
         # --- 执行批量推理 ---
@@ -241,7 +240,8 @@ def load_checkpoint(model, optimizer):
                 # 即使没有buffer，也返回checkpoint信息，以便恢复global_step等
                 return checkpoint, None, True
         except (KeyError, pickle.UnpicklingError, RuntimeError) as e:
-            print(f"  [WARNING] Failed to load checkpoint file. It might be corrupt or from an incompatible version: {e}")
+            print(
+                f"  [WARNING] Failed to load checkpoint file. It might be corrupt or from an incompatible version: {e}")
             return None, None, False
         except Exception as e:
             print(f"  [WARNING] An unexpected error occurred while loading checkpoint: {e}")
@@ -253,15 +253,22 @@ def load_checkpoint(model, optimizer):
 def update_web_ui_data(data):
     """
     将训练状态写入JSON文件，供Web前端监控。
-    此版本会把deque转换为list以便JSON序列化。
+    此版本能正确处理嵌套的监控数据结构。
     """
     # 创建一个可序列化的副本
     serializable_data = {
         "global_step": data.get("global_step", 0),
         "current_curriculum": data.get("current_curriculum", 0),
-        "metrics": {k: list(v) for k, v in data.get("metrics", {}).items()},
-        "validation": {k: list(v) for k, v in data.get("validation", {}).items()}
+        "training_metrics": {k: list(v) for k, v in data.get("training_metrics", {}).items()},
+        "system_metrics": {k: list(v) for k, v in data.get("system_metrics", {}).items()}
     }
+
+    # 单独处理嵌套的验证指标
+    serializable_validation = {}
+    validation_data = data.get("validation_metrics", {})
+    for stage_key, stage_data in validation_data.items():
+        serializable_validation[stage_key] = {k: list(v) for k, v in stage_data.items()}
+    serializable_data["validation_metrics"] = serializable_validation
 
     try:
         with open(config.WEB_STATUS_FILE, 'w') as f:
@@ -352,17 +359,19 @@ def learner_process():
     validator = Validator(config.VALIDATION_SET_SIZE, config.CURRICULUM_STAGES)
     logger.log_sub_step("Setting up Validator with persistent dataset...")
 
+    # 初始化全新的、结构更丰富的Web UI数据字典
     web_ui_data = {
         "global_step": global_step,
         "current_curriculum": current_curriculum,
-        "metrics": {
-            "steps": deque(maxlen=500), "total_loss": deque(maxlen=500),
-            "policy_loss": deque(maxlen=500), "value_loss": deque(maxlen=500)
+        "training_metrics": {
+            "steps": deque(), "total_loss": deque(),
+            "policy_loss": deque(), "value_loss": deque()
         },
-        "validation": {
-            "steps": deque(maxlen=50), "slr": deque(maxlen=50),
-            "gap": deque(maxlen=50), "win_rate": deque(maxlen=50)
-        }
+        "system_metrics": {
+            "steps": deque(),
+            "buffer_size": deque()
+        },
+        "validation_metrics": {}  # 将在验证时动态填充
     }
 
     # --- 6. 启动并行进程 ---
@@ -382,7 +391,8 @@ def learner_process():
     inference_result_dict = manager.dict()
 
     inference_proc = mp.Process(target=inference_worker,
-                                args=(model_dict, inference_request_queue, inference_result_dict, stop_event, model_params))
+                                args=(
+                                model_dict, inference_request_queue, inference_result_dict, stop_event, model_params))
     inference_proc.start()
 
     actors = []
@@ -410,17 +420,19 @@ def learner_process():
 
             # --- 等待缓冲区填充 ---
             if len(replay_buffer) < config.MIN_BUFFER_SIZE_FOR_TRAINING:
-                print(f"\r[INFO] Filling replay buffer... {len(replay_buffer)}/{config.MIN_BUFFER_SIZE_FOR_TRAINING}", end="")
+                print(f"\r[INFO] Filling replay buffer... {len(replay_buffer)}/{config.MIN_BUFFER_SIZE_FOR_TRAINING}",
+                      end="")
                 time.sleep(0.1)
                 continue
 
             if global_step == 0 and len(replay_buffer) >= config.MIN_BUFFER_SIZE_FOR_TRAINING:
-                print() # 换行
+                print()  # 换行
                 logger.log_info(f"✅ Replay Buffer filled. Starting training on {config.DEVICE}.")
 
             # --- 采样与批次准备 ---
             model.train()
-            beta = min(1.0, config.PER_BETA_START + global_step * (1.0 - config.PER_BETA_START) / config.PER_BETA_FRAMES)
+            beta = min(1.0,
+                       config.PER_BETA_START + global_step * (1.0 - config.PER_BETA_START) / config.PER_BETA_FRAMES)
             experiences, indices, weights = replay_buffer.sample(config.BATCH_SIZE, beta)
             batch = Batch.from_data_list([exp.state for exp in experiences]).to(config.DEVICE)
 
@@ -433,7 +445,8 @@ def learner_process():
                     padded_pis[i, :pi.shape[0], :pi.shape[1]] = pi
 
             pi_targets_padded = torch.from_numpy(padded_pis).float().to(config.DEVICE)
-            value_targets = torch.tensor([exp.value for exp in experiences], dtype=torch.float).view(-1, 1).to(config.DEVICE)
+            value_targets = torch.tensor([exp.value for exp in experiences], dtype=torch.float).view(-1, 1).to(
+                config.DEVICE)
             weights_tensor = torch.tensor(weights, dtype=torch.float).view(-1, 1).to(config.DEVICE)
 
             # --- 前向传播与损失计算 ---
@@ -461,11 +474,13 @@ def learner_process():
                     task_embeds_rep = valid_task_embeds.unsqueeze(1).expand(-1, num_procs, -1)
                     proc_embeds_rep = proc_embeds.unsqueeze(0).expand(num_valid_tasks, -1, -1)
 
-                    combined_embeds = torch.cat([task_embeds_rep, proc_embeds_rep], dim=2).view(-1, config.EMBEDDING_DIM * 2)
+                    combined_embeds = torch.cat([task_embeds_rep, proc_embeds_rep], dim=2).view(-1,
+                                                                                                config.EMBEDDING_DIM * 2)
                     proc_logits = model.policy_head_proc(combined_embeds).view(num_valid_tasks, num_procs)
 
                     log_pi_proc_pred = F.log_softmax(proc_logits, dim=1)
-                    pi_proc_target_cond = pi_target[valid_tasks_mask] / (pi_task_target[valid_tasks_mask].unsqueeze(1) + 1e-8)
+                    pi_proc_target_cond = pi_target[valid_tasks_mask] / (
+                                pi_task_target[valid_tasks_mask].unsqueeze(1) + 1e-8)
                     ce_per_task = -torch.sum(pi_proc_target_cond * log_pi_proc_pred, dim=1)
                     loss_proc_i = torch.sum(pi_task_target[valid_tasks_mask] * ce_per_task)
 
@@ -489,37 +504,71 @@ def learner_process():
             writer.add_scalar("Loss/Value", value_loss.item(), global_step)
 
             web_ui_data["global_step"] = global_step
-            web_ui_data["metrics"]["steps"].append(global_step)
-            web_ui_data["metrics"]["total_loss"].append(total_loss.item())
-            web_ui_data["metrics"]["policy_loss"].append(policy_loss.item())
-            web_ui_data["metrics"]["value_loss"].append(value_loss.item())
+            web_ui_data["training_metrics"]["steps"].append(global_step)
+            web_ui_data["training_metrics"]["total_loss"].append(total_loss.item())
+            web_ui_data["training_metrics"]["policy_loss"].append(policy_loss.item())
+            web_ui_data["training_metrics"]["value_loss"].append(value_loss.item())
+            web_ui_data["system_metrics"]["steps"].append(global_step)
+            web_ui_data["system_metrics"]["buffer_size"].append(len(replay_buffer))
 
             # --- 定期验证 ---
             if global_step > 0 and global_step % config.VALIDATION_INTERVAL == 0:
-                logger.log_event(f"Step {global_step}: Running Validation (Curriculum {current_curriculum})", icon="📊")
-                val_results = validator.evaluate(model, config.DEVICE, current_curriculum, global_step)
-                for key, value in val_results.items():
-                    if isinstance(value, (int, float)): writer.add_scalar(f"Validation_C{current_curriculum}/{key}", value, global_step)
+                logger.log_event(f"Step {global_step}: Running Validation on All Learned Curricula", icon="📊")
+                # val_results_by_stage 是一个字典 {stage_num: results_dict}
+                val_results_by_stage = validator.evaluate(model, config.DEVICE, current_curriculum, global_step)
 
-                logger.log_info(f"Avg. Makespan (Agent): {val_results['Avg_Makespan_Agent']:.2f}", symbol="├─")
-                logger.log_info(f"Avg. Makespan (HEFT): {val_results['Avg_Makespan_HEFT']:.2f}", symbol="├─")
-                logger.log_info(f"Avg. Makespan (ILP): {val_results['Avg_Makespan_ILP']:.2f}", symbol="├─")
-                logger.log_info(f"Avg. SLR vs HEFT: {val_results['Avg_SLR_vs_HEFT']:.4f}", symbol="├─")
-                logger.log_info(f"Win Rate vs HEFT: {val_results['Win_Rate_vs_HEFT']:.2%}", symbol="├─")
-                logger.log_info(f"Avg. Optimality Gap: {val_results['Avg_Optimality_Gap']:.4f}")
+                for stage, stage_results in val_results_by_stage.items():
+                    # --- 更新TensorBoard日志 ---
+                    writer.add_scalars(f"Validation_Makespan/C{stage}", {
+                        'Agent': stage_results['Avg_Makespan_Agent'],
+                        'HEFT': stage_results['Avg_Makespan_HEFT'],
+                        'ILP': stage_results['Avg_Makespan_ILP'],
+                    }, global_step)
+                    writer.add_scalar(f"Validation_SLR/C{stage}", stage_results['Avg_SLR_vs_HEFT'], global_step)
+                    writer.add_scalar(f"Validation_Gap/C{stage}", stage_results['Avg_Optimality_Gap'], global_step)
+                    writer.add_scalar(f"Validation_WinRate/C{stage}", stage_results['Win_Rate_vs_HEFT'], global_step)
 
-                web_ui_data["validation"]["steps"].append(global_step)
-                web_ui_data["validation"]["slr"].append(val_results['Avg_SLR_vs_HEFT'])
-                web_ui_data["validation"]["gap"].append(val_results['Avg_Optimality_Gap'])
-                web_ui_data["validation"]["win_rate"].append(val_results['Win_Rate_vs_HEFT'])
+                    # --- 更新Web UI数据 ---
+                    stage_key = f"C{stage}"
+                    if stage_key not in web_ui_data["validation_metrics"]:
+                        web_ui_data["validation_metrics"][stage_key] = {
+                            "steps": deque(), "avg_makespan_agent": deque(),
+                            "avg_makespan_heft": deque(), "avg_makespan_ilp": deque(),
+                            "avg_slr": deque(), "avg_gap": deque(), "win_rate": deque()
+                        }
 
-                # --- 课程学习晋级判断 ---
-                slr_history.append(val_results['Avg_SLR_vs_HEFT'])
-                if len(slr_history) == config.PROMOTION_STABLE_EPOCHS and all(s < config.PROMOTION_THRESHOLD_SLR for s in slr_history):
+                    ui_stage_data = web_ui_data["validation_metrics"][stage_key]
+                    ui_stage_data["steps"].append(global_step)
+                    ui_stage_data["avg_makespan_agent"].append(stage_results['Avg_Makespan_Agent'])
+                    ui_stage_data["avg_makespan_heft"].append(stage_results['Avg_Makespan_HEFT'])
+                    ui_stage_data["avg_makespan_ilp"].append(stage_results['Avg_Makespan_ILP'])
+                    ui_stage_data["avg_slr"].append(stage_results['Avg_SLR_vs_HEFT'])
+                    ui_stage_data["avg_gap"].append(stage_results['Avg_Optimality_Gap'])
+                    ui_stage_data["win_rate"].append(stage_results['Win_Rate_vs_HEFT'])
+
+                # 打印当前课程的摘要
+                current_results = val_results_by_stage[current_curriculum]
+                logger.log_info(f"Summary for Current Curriculum (C{current_curriculum}):", symbol="├─")
+                # 从结果字典中获取三个makespan值
+                agent_m = current_results['Avg_Makespan_Agent']
+                heft_m = current_results['Avg_Makespan_HEFT']
+                ilp_m = current_results['Avg_Makespan_ILP']
+                # 构建一个格式化的单行字符串用于显示
+                # {value:>7.2f} 表示：右对齐(>), 总宽度为7个字符, 保留2位小数
+                makespan_summary_line = f"Avg. Makespans (Agent | HEFT   | ILP)   : {agent_m:>7.2f} | {heft_m:>7.2f} | {ilp_m:>7.2f}"
+                logger.log_info(makespan_summary_line, indent=2)
+                logger.log_info(f"Avg. SLR vs HEFT: {current_results['Avg_SLR_vs_HEFT']:.4f}", indent=2)
+                logger.log_info(f"Avg. Optimality Gap: {current_results['Avg_Optimality_Gap']:.4f}", indent=2)
+
+                # --- 课程学习晋级判断 (仅基于当前课程的表现) ---
+                slr_history.append(current_results['Avg_SLR_vs_HEFT'])
+                if len(slr_history) == config.PROMOTION_STABLE_EPOCHS and all(
+                        s < config.PROMOTION_THRESHOLD_SLR for s in slr_history):
                     if current_curriculum < max(config.CURRICULUM_STAGES.keys()):
                         current_curriculum += 1
                         web_ui_data["current_curriculum"] = current_curriculum
-                        logger.log_event(f"CURRICULUM PROMOTION! -> Stage {current_curriculum}", icon="⭐", border_char="⭐")
+                        logger.log_event(f"CURRICULUM PROMOTION! -> Stage {current_curriculum}", icon="⭐",
+                                         border_char="⭐")
                         for q in curriculum_queues: q.put({'curriculum': current_curriculum})
                         slr_history.clear()
 
