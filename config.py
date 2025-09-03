@@ -80,7 +80,7 @@ MIN_CURRICULUM_STAGES = 3
 # Description: 一个固定的整数，仅在 ADAPTIVE_CURRICULUM_ENABLED 设置为 False 时生效，用于指定课程学习的总阶段数。
 # Role: 在需要进行精确控制或复现特定实验设置时，提供一种覆盖自适应机制的备用方案。
 # Type: int
-MANUAL_NUM_CURRICULUM_STAGES = 8
+MANUAL_NUM_CURRICULUM_STAGES = 4
 
 
 # --- 课程生成函数 (内部使用) ---
@@ -168,7 +168,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Description: 启动多少个并行的进程来生成自我对弈数据。
 # Role: 加速训练数据的生成。数量应根据CPU核心数和内存大小来调整。
 # Type: int
-NUM_ACTORS = 2
+CPU_COUNT = os.cpu_count()
+NUM_ACTORS = max(1, CPU_COUNT)
 
 # LEARNING_RATE: 优化器的学习率
 # Description: Adam优化器在更新模型权重时使用的步长。
