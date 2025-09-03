@@ -53,10 +53,6 @@ class Validator:
                     calculate_rank_u(dag, proc_speeds)
                     m_heft = heft_scheduler(dag.copy(), k, proc_speeds)
 
-                    # --- 核心修改 ---
-                    # 直接调用ILP求解器。根据新要求，如果求解失败，
-                    # `solve_dag_scheduling_ilp`会抛出异常，这将中断验证集的生成过程，
-                    # 从而使整个项目报错，符合预期。
                     pbar.set_postfix_str(f"正在求解 ILP (实例 c{stage}_i{i})...")
                     m_ilp = solve_dag_scheduling_ilp(dag.copy(), k, proc_speeds)
                     ilp_success_count += 1
@@ -112,7 +108,11 @@ class Validator:
             win_count = 0
             per_instance_results = []
 
-            for instance in validation_set:
+            pbar = tqdm(validation_set,
+                        desc=f"  ├─ Evaluating on Curriculum C{stage_to_eval}",
+                        leave=False,
+                        bar_format="{l_bar}{bar:20}{r_bar}{bar:-20b}")
+            for instance in pbar:
                 dag, k, proc_speeds, m_heft, m_ilp = (
                     instance['dag'], instance['k'], instance['proc_speeds'],
                     instance['m_heft'], instance['m_ilp']
@@ -154,11 +154,9 @@ class Validator:
                 "Avg_Makespan_HEFT": np.mean(heft_makespans) if heft_makespans else 0.0,
                 "Avg_Makespan_ILP": np.mean(ilp_makespans) if ilp_makespans else -1.0,
                 "Win_Rate_vs_HEFT": win_count / len(validation_set) if validation_set else 0.0,
-                # SLR Metrics
                 "Avg_SLR_vs_HEFT": np.mean(slr_list) if slr_list.size > 0 else 1.0,
                 "Std_SLR_vs_HEFT": np.std(slr_list) if slr_list.size > 0 else 0.0,
                 "Median_SLR_vs_HEFT": np.median(slr_list) if slr_list.size > 0 else 1.0,
-                # Optimality Gap Metrics
                 "Avg_Optimality_Gap": np.mean(gap_list) if gap_list.size > 0 else -1.0,
                 "Std_Optimality_Gap": np.std(gap_list) if gap_list.size > 0 else 0.0,
                 "Median_Optimality_Gap": np.median(gap_list) if gap_list.size > 0 else -1.0,

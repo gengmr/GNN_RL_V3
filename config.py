@@ -169,7 +169,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Role: 加速训练数据的生成。数量应根据CPU核心数和内存大小来调整。
 # Type: int
 CPU_COUNT = os.cpu_count()
-NUM_ACTORS = max(1, CPU_COUNT)
+NUM_ACTORS = max(1, CPU_COUNT-2)
 
 # LEARNING_RATE: 优化器的学习率
 # Description: Adam优化器在更新模型权重时使用的步长。

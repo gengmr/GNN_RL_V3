@@ -13,6 +13,7 @@ import pickle
 from collections import deque, namedtuple
 import numpy as np
 import queue
+from tqdm import tqdm
 
 import config
 from model import GraphTransformer
@@ -359,20 +360,44 @@ def learner_process():
     validator = Validator(config.VALIDATION_SET_SIZE, config.CURRICULUM_STAGES)
     logger.log_sub_step("Setting up Validator with persistent dataset...")
 
-    # 初始化全新的、结构更丰富的Web UI数据字典
-    web_ui_data = {
-        "global_step": global_step,
-        "current_curriculum": current_curriculum,
-        "training_metrics": {
-            "steps": deque(), "total_loss": deque(),
-            "policy_loss": deque(), "value_loss": deque()
-        },
-        "system_metrics": {
-            "steps": deque(),
-            "buffer_size": deque()
-        },
-        "validation_metrics": {}  # 将在验证时动态填充
-    }
+    # 根据检查点是否存在来加载或创建 web_ui_data
+    if success and 'web_ui_data' in checkpoint and checkpoint['web_ui_data']:
+        logger.log_info("✅ Restoring historical monitoring data from checkpoint.")
+        web_ui_data = checkpoint['web_ui_data']
+
+        # 关键一步: torch.load 会将 deque 变回 list。
+        # 我们需要递归地将所有数据列表转换回 deque，以便后续的 .append() 操作能正常工作。
+        for metric_type in ['training_metrics', 'system_metrics']:
+            if metric_type in web_ui_data:
+                for key, value in web_ui_data[metric_type].items():
+                    web_ui_data[metric_type][key] = deque(value)
+
+        if 'validation_metrics' in web_ui_data:
+            for stage_key, stage_data in web_ui_data['validation_metrics'].items():
+                for key, value in stage_data.items():
+                    web_ui_data['validation_metrics'][stage_key][key] = deque(value)
+
+    else:
+        if success:
+            logger.log_info(
+                "⚠️ Checkpoint found, but no historical monitoring data inside. Initializing a new monitoring session.")
+        else:
+            logger.log_info("⚠️ No checkpoint found. Initializing a new monitoring session.")
+
+        # 如果没有检查点或检查点中没有监控数据，则使用原始的初始化代码
+        web_ui_data = {
+            "global_step": global_step,
+            "current_curriculum": current_curriculum,
+            "training_metrics": {
+                "steps": deque(), "total_loss": deque(),
+                "policy_loss": deque(), "value_loss": deque()
+            },
+            "system_metrics": {
+                "steps": deque(),
+                "buffer_size": deque()
+            },
+            "validation_metrics": {}
+        }
 
     # --- 6. 启动并行进程 ---
     logger.log_major_step(f"Spawning {config.NUM_ACTORS} Actors & 1 Inference Worker", icon="🚀")
@@ -392,7 +417,8 @@ def learner_process():
 
     inference_proc = mp.Process(target=inference_worker,
                                 args=(
-                                model_dict, inference_request_queue, inference_result_dict, stop_event, model_params))
+                                    model_dict, inference_request_queue, inference_result_dict, stop_event,
+                                    model_params))
     inference_proc.start()
 
     actors = []
@@ -407,6 +433,14 @@ def learner_process():
 
     # --- 7. 主训练循环 ---
     logger.log_major_step("Starting Main Training Loop", icon="▶️")
+
+    steps_until_val = config.VALIDATION_INTERVAL
+    initial_step = global_step % steps_until_val
+    next_val_step = global_step - initial_step + steps_until_val
+    pbar = tqdm(total=steps_until_val, initial=initial_step,
+                desc=f"Training (next val @ step {next_val_step})",
+                bar_format="{l_bar}{bar:20}{r_bar}{bar:-20b}")
+
     try:
         while True:
             # --- 数据收集 ---
@@ -426,8 +460,13 @@ def learner_process():
                 continue
 
             if global_step == 0 and len(replay_buffer) >= config.MIN_BUFFER_SIZE_FOR_TRAINING:
+                pbar.close()  # 关闭初始的bar
                 print()  # 换行
                 logger.log_info(f"✅ Replay Buffer filled. Starting training on {config.DEVICE}.")
+                # 重新创建bar开始正式计数
+                pbar = tqdm(total=steps_until_val, initial=0,
+                            desc=f"Training (next val @ step {steps_until_val})",
+                            bar_format="{l_bar}{bar:20}{r_bar}{bar:-20b}")
 
             # --- 采样与批次准备 ---
             model.train()
@@ -480,7 +519,7 @@ def learner_process():
 
                     log_pi_proc_pred = F.log_softmax(proc_logits, dim=1)
                     pi_proc_target_cond = pi_target[valid_tasks_mask] / (
-                                pi_task_target[valid_tasks_mask].unsqueeze(1) + 1e-8)
+                            pi_task_target[valid_tasks_mask].unsqueeze(1) + 1e-8)
                     ce_per_task = -torch.sum(pi_proc_target_cond * log_pi_proc_pred, dim=1)
                     loss_proc_i = torch.sum(pi_task_target[valid_tasks_mask] * ce_per_task)
 
@@ -502,6 +541,7 @@ def learner_process():
             writer.add_scalar("Loss/Total", total_loss.item(), global_step)
             writer.add_scalar("Loss/Policy", policy_loss.item(), global_step)
             writer.add_scalar("Loss/Value", value_loss.item(), global_step)
+            pbar.set_postfix_str(f"Loss={total_loss.item():.3f}")
 
             web_ui_data["global_step"] = global_step
             web_ui_data["training_metrics"]["steps"].append(global_step)
@@ -513,8 +553,8 @@ def learner_process():
 
             # --- 定期验证 ---
             if global_step > 0 and global_step % config.VALIDATION_INTERVAL == 0:
+                pbar.close()
                 logger.log_event(f"Step {global_step}: Running Validation on All Learned Curricula", icon="📊")
-                # val_results_by_stage 是一个字典 {stage_num: results_dict}
                 val_results_by_stage = validator.evaluate(model, config.DEVICE, current_curriculum, global_step)
 
                 for stage, stage_results in val_results_by_stage.items():
@@ -548,13 +588,10 @@ def learner_process():
 
                 # 打印当前课程的摘要
                 current_results = val_results_by_stage[current_curriculum]
-                logger.log_info(f"Summary for Current Curriculum (C{current_curriculum}):", symbol="├─")
-                # 从结果字典中获取三个makespan值
+                logger.log_info(f"Summary for Current Curriculum (C{current_curriculum}):", symbol="└─")
                 agent_m = current_results['Avg_Makespan_Agent']
                 heft_m = current_results['Avg_Makespan_HEFT']
                 ilp_m = current_results['Avg_Makespan_ILP']
-                # 构建一个格式化的单行字符串用于显示
-                # {value:>7.2f} 表示：右对齐(>), 总宽度为7个字符, 保留2位小数
                 makespan_summary_line = f"Avg. Makespans (Agent | HEFT   | ILP)   : {agent_m:>7.2f} | {heft_m:>7.2f} | {ilp_m:>7.2f}"
                 logger.log_info(makespan_summary_line, indent=2)
                 logger.log_info(f"Avg. SLR vs HEFT: {current_results['Avg_SLR_vs_HEFT']:.4f}", indent=2)
@@ -572,27 +609,39 @@ def learner_process():
                         for q in curriculum_queues: q.put({'curriculum': current_curriculum})
                         slr_history.clear()
 
+                pbar = tqdm(total=steps_until_val, initial=0,
+                            desc=f"Training (next val @ step {global_step + steps_until_val})",
+                            bar_format="{l_bar}{bar:20}{r_bar}{bar:-20b}")
+
             # --- 模型同步 ---
             if global_step > 0 and global_step % config.MODEL_SYNC_INTERVAL == 0:
                 current_cpu_state = {k: v.cpu().detach() for k, v in model.state_dict().items()}
-                # 直接 update, 移除 clear(), 避免非原子性操作导致的竞争条件
                 model_dict.update(current_cpu_state)
 
             # --- 保存检查点 ---
             if global_step > 0 and global_step % config.CHECKPOINT_INTERVAL == 0:
                 logger.log_event(f"Step {global_step}: Saving Checkpoint", icon="💾")
-                save_checkpoint({'global_step': global_step, 'model_state_dict': model.state_dict(),
-                                 'optimizer_state_dict': optimizer.state_dict(),
-                                 'current_curriculum': current_curriculum, 'slr_history': slr_history,
-                                 'replay_buffer': replay_buffer})
+                save_checkpoint({
+                    'global_step': global_step,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'current_curriculum': current_curriculum,
+                    'slr_history': slr_history,
+                    'replay_buffer': replay_buffer,
+                    'web_ui_data': web_ui_data
+                })
                 logger.log_info(f"✅ Checkpoint saved to '{config.CHECKPOINT_FILE}'.")
 
             update_web_ui_data(web_ui_data)
             global_step += 1
+            if len(replay_buffer) >= config.MIN_BUFFER_SIZE_FOR_TRAINING:
+                pbar.update(1)
 
     except KeyboardInterrupt:
         logger.log_event("KeyboardInterrupt caught. Initiating graceful shutdown...", icon="🛑")
     finally:
+        if 'pbar' in locals() and pbar:
+            pbar.close()
         logger.log_major_step("Shutdown Sequence", icon="🛑")
         logger.log_sub_step("Sending stop signal to all processes...")
         stop_event.set()
@@ -605,14 +654,18 @@ def learner_process():
         logger.log_info("✅ All Actor processes have been terminated.")
 
         logger.log_sub_step("Saving final model state and replay buffer...")
-        save_checkpoint({'global_step': global_step, 'model_state_dict': model.state_dict(),
-                         'optimizer_state_dict': optimizer.state_dict(), 'current_curriculum': current_curriculum,
-                         'slr_history': slr_history, 'replay_buffer': replay_buffer})
+        save_checkpoint({
+            'global_step': global_step,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'current_curriculum': current_curriculum,
+            'slr_history': slr_history,
+            'replay_buffer': replay_buffer,
+            'web_ui_data': web_ui_data
+        })
         logger.log_info(f"✅ Final state saved to '{config.CHECKPOINT_FILE}'.")
         logger.print_footer()
 
 
 if __name__ == '__main__':
-    # 确保在Windows和macOS上使用'spawn'启动方法是安全的
-    # mp.set_start_method('spawn', force=True) 移至learner_process内部，以确保只在主进程中调用
     learner_process()

@@ -170,36 +170,68 @@ def solve_dag_scheduling_ilp_local(dag: nx.DiGraph, k: int, proc_speeds):
 
 
 def calculate_rank_u_local(dag: nx.DiGraph, proc_speeds: np.ndarray):
+    """**修正点**: 与heuristics.py中的版本保持一致，确保逻辑正确性。"""
     memo = {}
-    avg_exec_times = {i: np.mean([data['w'] / s for s in proc_speeds]) for i, data in dag.nodes(data=True)}
+    mean_proc_speed = np.mean(proc_speeds)
+
     for node in reversed(list(nx.topological_sort(dag))):
-        avg_exec_time = avg_exec_times[node]
+        avg_exec_time = dag.nodes[node]['w'] / mean_proc_speed
         successors = list(dag.successors(node))
         if not successors:
             rank = avg_exec_time
         else:
-            rank = avg_exec_time + max(dag.edges[node, succ]['c'] + memo[succ] for succ in successors)
+            max_succ_val = 0
+            for succ in successors:
+                val = dag.edges[node, succ]['c'] + memo[succ]
+                if val > max_succ_val:
+                    max_succ_val = val
+            rank = avg_exec_time + max_succ_val
         memo[node] = rank
     nx.set_node_attributes(dag, memo, 'rank_u')
 
 
 def heft_solver_local(dag: nx.DiGraph, k: int, proc_speeds: np.ndarray):
+    """**关键修正点**: 重写此函数以完全匹配 heuristics.py 中的正确HEFT逻辑。"""
     proc_avail_time = np.zeros(k)
-    task_finish_times, task_assignments, schedule_details = {}, {}, []
+    task_finish_times = {}
+    task_assignments = {}
+    schedule_details = []
+
     schedule_order = sorted(dag.nodes(), key=lambda n: dag.nodes[n]['rank_u'], reverse=True)
+
     for task_id in schedule_order:
-        best_proc, earliest_finish_time, best_start_time = -1, float('inf'), -1.0
+        best_proc = -1
+        earliest_finish_time = float('inf')
+        best_start_time = -1.0
+
         for proc_idx in range(k):
-            dat = max([task_finish_times.get(p, 0) + (
-                0 if task_assignments.get(p) == proc_idx else dag.edges[p, task_id]['c']) for p in
-                       dag.predecessors(task_id)], default=0)
-            start_time = max(proc_avail_time[proc_idx], dat)
-            finish_time = start_time + dag.nodes[task_id]['w'] / proc_speeds[proc_idx]
-            if finish_time < earliest_finish_time: earliest_finish_time, best_proc, best_start_time = finish_time, proc_idx, start_time
+            data_ready_time = 0
+            for pred in dag.predecessors(task_id):
+                pred_proc = task_assignments[pred]
+                comm_cost = 0 if pred_proc == proc_idx else dag.edges[pred, task_id]['c']
+                dat = task_finish_times[pred] + comm_cost
+                if dat > data_ready_time:
+                    data_ready_time = dat
+
+            start_time = max(proc_avail_time[proc_idx], data_ready_time)
+            exec_time = dag.nodes[task_id]['w'] / proc_speeds[proc_idx]
+            finish_time = start_time + exec_time
+
+            if finish_time < earliest_finish_time:
+                earliest_finish_time = finish_time
+                best_proc = proc_idx
+                best_start_time = start_time
+
         proc_avail_time[best_proc] = earliest_finish_time
-        task_finish_times[task_id], task_assignments[task_id] = earliest_finish_time, best_proc
-        schedule_details.append({'task_id': task_id, 'proc_id': best_proc, 'start_time': best_start_time,
-                                 'finish_time': earliest_finish_time})
+        task_finish_times[task_id] = earliest_finish_time
+        task_assignments[task_id] = best_proc
+        schedule_details.append({
+            'task_id': task_id,
+            'proc_id': best_proc,
+            'start_time': best_start_time,
+            'finish_time': earliest_finish_time
+        })
+
     makespan = np.max(proc_avail_time) if k > 0 else 0
     schedule_details.sort(key=lambda x: x['finish_time'])
     return makespan, schedule_details
