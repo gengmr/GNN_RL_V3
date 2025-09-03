@@ -1,0 +1,128 @@
+<!-- web_monitor/templates/index.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>训练监控仪表盘 - Graph Transformer Scheduler</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.1/moment.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.0"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f7f9; color: #333; margin: 0; padding: 20px; }
+        .container { max-width: 1600px; margin: auto; }
+        header { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        header h1 { margin: 0; color: #2c3e50; font-size: 24px; }
+        .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px; }
+        .metric-card { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center; }
+        .metric-card h3 { margin: 0 0 10px 0; color: #7f8c8d; font-size: 16px; text-transform: uppercase; }
+        .metric-card p { margin: 0; font-size: 28px; font-weight: 600; color: #3498db; }
+        .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .chart-container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        @media (max-width: 900px) { .charts-grid { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>训练监控仪表盘 - Graph Transformer Scheduler</h1>
+        </header>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <h3>Global Step</h3>
+                <p id="global-step">--</p>
+            </div>
+            <div class="metric-card">
+                <h3>Curriculum Stage</h3>
+                <p id="curriculum-stage">--</p>
+            </div>
+            <div class="metric-card">
+                <h3>Latest SLR vs HEFT</h3>
+                <p id="latest-slr">--</p>
+            </div>
+            <div class="metric-card">
+                <h3>Latest Optimality Gap</h3>
+                <p id="latest-gap">--</p>
+            </div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-container">
+                <canvas id="lossChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <canvas id="validationChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const ctxLoss = document.getElementById('lossChart').getContext('2d');
+        const lossChart = new Chart(ctxLoss, {
+            type: 'line',
+            data: { labels: [], datasets: [
+                { label: 'Total Loss', data: [], borderColor: 'rgba(231, 76, 60, 1)', fill: false, tension: 0.1 },
+                { label: 'Policy Loss', data: [], borderColor: 'rgba(52, 152, 219, 1)', fill: false, tension: 0.1 },
+                { label: 'Value Loss', data: [], borderColor: 'rgba(46, 204, 113, 1)', fill: false, tension: 0.1 }
+            ]},
+            options: { responsive: true, plugins: { title: { display: true, text: 'Training Losses' } }, scales: { x: { title: { display: true, text: 'Global Step' } } } }
+        });
+
+        const ctxValidation = document.getElementById('validationChart').getContext('2d');
+        const validationChart = new Chart(ctxValidation, {
+            type: 'line',
+            data: { labels: [], datasets: [
+                { label: 'Avg SLR vs HEFT', data: [], borderColor: 'rgba(155, 89, 182, 1)', yAxisID: 'y', fill: false, tension: 0.1 },
+                { label: 'Avg Optimality Gap', data: [], borderColor: 'rgba(243, 156, 18, 1)', yAxisID: 'y', fill: false, tension: 0.1 },
+                { label: 'Win Rate vs HEFT', data: [], borderColor: 'rgba(26, 188, 156, 1)', yAxisID: 'y1', fill: false, tension: 0.1 }
+            ]},
+            options: {
+                responsive: true,
+                plugins: { title: { display: true, text: 'Validation Metrics' } },
+                scales: {
+                    x: { title: { display: true, text: 'Global Step' } },
+                    y: { type: 'linear', display: true, position: 'left', title: { display: true, text: 'Ratio (SLR / Gap)' } },
+                    y1: { type: 'linear', display: true, position: 'right', title: { display: true, text: 'Win Rate (%)' }, grid: { drawOnChartArea: false } }
+                }
+            }
+        });
+
+        async function fetchData() {
+            try {
+                const response = await fetch('/api/data');
+                if (!response.ok) return;
+                const data = await response.json();
+
+                // Update metric cards
+                document.getElementById('global-step').textContent = data.global_step;
+                document.getElementById('curriculum-stage').textContent = data.current_curriculum;
+                document.getElementById('latest-slr').textContent = data.validation.slr.length > 0 ? data.validation.slr.slice(-1)[0].toFixed(4) : '--';
+                document.getElementById('latest-gap').textContent = data.validation.gap.length > 0 ? data.validation.gap.slice(-1)[0].toFixed(4) : '--';
+
+                // Update loss chart
+                const lossMetrics = data.metrics;
+                lossChart.data.labels = lossMetrics.steps; // 使用真实的全局步数作为X轴
+                lossChart.data.datasets[0].data = lossMetrics.total_loss;
+                lossChart.data.datasets[1].data = lossMetrics.policy_loss;
+                lossChart.data.datasets[2].data = lossMetrics.value_loss;
+                lossChart.update('none');
+
+                // Update validation chart
+                const valMetrics = data.validation;
+                validationChart.data.labels = valMetrics.steps;
+                validationChart.data.datasets[0].data = valMetrics.slr;
+                validationChart.data.datasets[1].data = valMetrics.gap;
+                validationChart.data.datasets[2].data = valMetrics.win_rate.map(r => r * 100); // as percentage
+                validationChart.update('none');
+
+            } catch (error) {
+                console.error("Error fetching data:", error);
+            }
+        }
+
+        setInterval(fetchData, 3000); // Poll every 3 seconds
+        window.onload = fetchData;
+    </script>
+</body>
+</html>
