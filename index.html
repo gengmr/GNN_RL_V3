@@ -100,7 +100,6 @@
             cursor: pointer;
         }
 
-        /* 优雅的 SVG 放大图标 */
         .chart-container::after {
             content: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23adb5bd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3'/%3E%3C/svg%3E");
             position: absolute;
@@ -189,25 +188,32 @@
     </div>
 
     <script>
-        // --- 1. 全局配置 & 颜色系统 (在JS中定义) ---
-        const GNN_RL_COLOR = '#0d6efd'; // 主角颜色: 专业蓝
-        const HEFT_COLOR = '#fd7e14';   // 对比色1: 活力橙
-        const ILP_COLOR = '#198754';    // 对比色2: 稳重绿
+        // --- 1. 全局配置 & 颜色系统 ---
         const LOSS_TOTAL_COLOR = '#dc3545';
         const LOSS_POLICY_COLOR = '#6f42c1';
         const LOSS_VALUE_COLOR = '#20c997';
-        // 多课程对比色板 (https://coolors.co/palettes/trending)
         const curriculumColorPalette = ['#ef476f', '#ffd166', '#06d6a0', '#118ab2', '#073b4c', '#f78c6b', '#8d99ae', '#d90429'];
 
         let activeCharts = {};
         let modalChart = null;
 
-        // --- 2. 共享图表配置 (专业学术风格) ---
+        // --- 2. 共享图表配置 ---
         const sharedChartOptions = {
             responsive: true, maintainAspectRatio: false, animation: false,
-            interaction: { mode: 'index', intersect: false },
+
+            // ======================== 核心修正区域 ========================
+            // 将交互模式从 'index' 改为 'x'
+            // 'index' 按数据点索引查找，导致不同课程的数据在提示框中重叠
+            // 'x' 按X轴坐标值查找，确保只显示与鼠标当前位置对齐的数据
+            interaction: {
+                mode: 'x',
+                intersect: false
+            },
+            // =============================================================
+
             scales: {
                 x: {
+                    type: 'linear',
                     title: { display: true, text: 'Global Step', font: { size: 14 } },
                     grid: { color: 'rgba(0, 0, 0, 0.05)' }
                 },
@@ -231,15 +237,14 @@
             elements: {
                 line: { tension: 0.3, borderWidth: 2 },
                 point: {
-                    radius: 0, // 默认不显示数据点
-                    hoverRadius: 6, // 悬停时突出显示
+                    radius: 0,
+                    hoverRadius: 6,
                     hitRadius: 10,
                 }
             }
         };
 
         // --- 3. 辅助函数 ---
-        // 将 HEX 颜色转换为带透明度的 RGBA
         function hexToRgba(hex, alpha) {
             let r = 0, g = 0, b = 0;
             if (hex.length == 4) {
@@ -262,11 +267,8 @@
             { label: 'Policy Loss', borderColor: LOSS_POLICY_COLOR, data: [] },
             { label: 'Value Loss', borderColor: LOSS_VALUE_COLOR, data: [] }
         ]}});
-        createChart('makespanChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: 'Makespan 动态对比 (当前课程)' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, title: {...sharedChartOptions.scales.y.title, text: 'Makespan'}}}}, data: { datasets: [
-            { label: 'GNN-RL', borderColor: GNN_RL_COLOR, borderWidth: 3, fill: { target: 'origin', above: hexToRgba(GNN_RL_COLOR, 0.08) }, data: [] },
-            { label: 'HEFT', borderColor: HEFT_COLOR, borderDash: [6, 3], data: [] },
-            { label: 'ILP (最优)', borderColor: ILP_COLOR, borderDash: [2, 2], data: [] }
-        ]}});
+
+        createChart('makespanChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: 'Makespan 跨课程详细对比' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, title: {...sharedChartOptions.scales.y.title, text: 'Makespan'}}}}, data: { datasets: [] }});
         createChart('slrChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: 'SLR (vs HEFT) 跨课程对比' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, title: {...sharedChartOptions.scales.y.title, text: 'SLR (越低越好)'}}}}, data: { datasets: [] }});
         createChart('gapChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: '最优间隙 (vs ILP) 跨课程对比' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, title: {...sharedChartOptions.scales.y.title, text: '最优间隙 (越低越好)'}}}}, data: { datasets: [] }});
         createChart('winRateChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: '胜率 (vs HEFT) 跨课程对比' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, min: 0, max: 100, title: {...sharedChartOptions.scales.y.title, text: '胜率 (%)'}}}}, data: { datasets: [] }});
@@ -287,13 +289,20 @@
         }
 
         // --- 6. 数据获取与更新 ---
-        function createOrUpdateDataset(chart, label, data, index) {
-            const color = curriculumColorPalette[index % curriculumColorPalette.length];
+        function createOrUpdateDataset(chart, label, data, styleOptions) {
             let dataset = chart.data.datasets.find(d => d.label === label);
             if (dataset) {
                 dataset.data = data;
             } else {
-                chart.data.datasets.push({ label, data, borderColor: color, fill: { target: 'origin', above: hexToRgba(color, 0.05) } });
+                const newDataset = {
+                    label,
+                    data,
+                    borderColor: styleOptions.color,
+                    borderWidth: styleOptions.borderWidth || 2,
+                    borderDash: styleOptions.borderDash || [],
+                    fill: false
+                };
+                chart.data.datasets.push(newDataset);
             }
         }
 
@@ -316,35 +325,41 @@
                     document.getElementById('latest-gap').textContent = data.validation_metrics[currentStageKey].avg_gap.slice(-1)[0].toFixed(4);
                 }
 
-                // 更新图表
-                Object.values(activeCharts).forEach(chart => chart.data.labels = data.training_metrics.steps);
-
+                // 为 Loss 图表设置数据（它使用类别轴，所以需要单独设置 labels）
+                activeCharts['lossChart'].data.labels = data.training_metrics.steps;
                 activeCharts['lossChart'].data.datasets[0].data = data.training_metrics.total_loss;
                 activeCharts['lossChart'].data.datasets[1].data = data.training_metrics.policy_loss;
                 activeCharts['lossChart'].data.datasets[2].data = data.training_metrics.value_loss;
 
-                if (data.validation_metrics[currentStageKey]) {
-                    const currentData = data.validation_metrics[currentStageKey];
-                    activeCharts['makespanChart'].options.plugins.title.text = `Makespan 对比 (验证于课程 ${data.current_curriculum})`;
-                    activeCharts['makespanChart'].data.labels = currentData.steps;
-                    activeCharts['makespanChart'].data.datasets[0].data = currentData.avg_makespan_agent;
-                    activeCharts['makespanChart'].data.datasets[1].data = currentData.avg_makespan_heft;
-                    activeCharts['makespanChart'].data.datasets[2].data = currentData.avg_makespan_ilp.map(v => v < 0 ? null : v);
-                }
-
                 const stageKeys = Object.keys(data.validation_metrics).sort((a,b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+
+                // 为所有对比图（使用数值轴）准备并更新数据
                 stageKeys.forEach((stageKey, index) => {
                     const stageData = data.validation_metrics[stageKey];
-                    const stageLabel = `课程 ${stageKey.slice(1)}`;
-                    activeCharts['slrChart'].data.labels = stageData.steps;
-                    activeCharts['gapChart'].data.labels = stageData.steps;
-                    activeCharts['winRateChart'].data.labels = stageData.steps;
+                    const stageNum = stageKey.slice(1);
+                    const color = curriculumColorPalette[index % curriculumColorPalette.length];
 
-                    createOrUpdateDataset(activeCharts['slrChart'], stageLabel, stageData.avg_slr, index);
-                    createOrUpdateDataset(activeCharts['gapChart'], stageLabel, stageData.avg_gap.map(v => v < 0 ? null : v), index);
-                    createOrUpdateDataset(activeCharts['winRateChart'], stageLabel, stageData.win_rate.map(r => r * 100), index);
+                    // 将数据点转换为 {x, y} 格式
+                    const agentMakespanData = stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_makespan_agent[i] }));
+                    const heftMakespanData = stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_makespan_heft[i] }));
+                    const ilpMakespanData = stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_makespan_ilp[i] < 0 ? null : stageData.avg_makespan_ilp[i] }));
+
+                    const slrData = stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_slr[i] }));
+                    const gapData = stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_gap[i] < 0 ? null : stageData.avg_gap[i] }));
+                    const winRateData = stageData.steps.map((step, i) => ({ x: step, y: stageData.win_rate[i] * 100 }));
+
+                    // 为Makespan图创建三条曲线
+                    createOrUpdateDataset(activeCharts['makespanChart'], `Agent - C${stageNum}`, agentMakespanData, { color: color, borderWidth: 3 });
+                    createOrUpdateDataset(activeCharts['makespanChart'], `HEFT - C${stageNum}`, heftMakespanData, { color: color, borderDash: [6, 3] });
+                    createOrUpdateDataset(activeCharts['makespanChart'], `ILP - C${stageNum}`, ilpMakespanData, { color: color, borderDash: [2, 2] });
+
+                    // 为其他对比图创建各自的曲线
+                    createOrUpdateDataset(activeCharts['slrChart'], `SLR - C${stageNum}`, slrData, { color: color });
+                    createOrUpdateDataset(activeCharts['gapChart'], `Gap - C${stageNum}`, gapData, { color: color });
+                    createOrUpdateDataset(activeCharts['winRateChart'], `Win Rate - C${stageNum}`, winRateData, { color: color });
                 });
 
+                // 一次性更新所有图表
                 Object.values(activeCharts).forEach(chart => chart.update('none'));
 
             } catch (error) {
