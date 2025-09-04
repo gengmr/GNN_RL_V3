@@ -110,7 +110,7 @@ class Validator:
 
             pbar = tqdm(validation_set,
                         desc=f"  ├─ Evaluating on Curriculum C{stage_to_eval}",
-                        leave=False,
+                        leave=True,
                         bar_format="{l_bar}{bar:20}{r_bar}{bar:-20b}")
             for instance in pbar:
                 dag, k, proc_speeds, m_heft, m_ilp = (
