@@ -111,7 +111,7 @@ def actor_process(actor_id, data_queue, curriculum_queue, stop_event,
                 break  # 没有合法动作，游戏结束
 
             # 使用MCTS增强策略
-            pi, _ = mcts.search(env, config.MCTS_SIMULATIONS, env.heft_makespan)
+            pi, _ = mcts.search(env, config.TRAINING_MCTS_SIMULATIONS, env.heft_makespan)
 
             if not pi:
                 break  # MCTS未返回有效策略

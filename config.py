@@ -232,7 +232,11 @@ PER_BETA_FRAMES = 100000
 #       由于处理器数量K增加到6，MCTS的搜索分支因子会变大。80作为一个初始值是合理的。
 #       如果发现模型性能不佳，可以考虑适当增加此值（例如到100或120）。
 # Type: int
-MCTS_SIMULATIONS = 150
+# 用于 Actor 生成训练数据，追求高质量，可以设置得更高
+TRAINING_MCTS_SIMULATIONS = 800  # 例如，增加到800次
+
+# 用于 Validator 评估性能，追求效率，可以设置得低一些
+VALIDATION_MCTS_SIMULATIONS = 50  # 保持或适当减少
 
 # MCTS_C_PUCT: UCB1公式中的探索常数
 # Description: 在MCTS的节点选择阶段，用于平衡利用（exploitation）和探索（exploration）的常数。

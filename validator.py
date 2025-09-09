@@ -14,7 +14,6 @@ from heuristics import heft_scheduler, calculate_rank_u
 from normalization import Normalizer
 from ilp_solver import solve_dag_scheduling_ilp
 from mcts import MCTS
-from config import MCTS_SIMULATIONS
 
 
 class Validator:
@@ -110,7 +109,7 @@ class Validator:
 
             pbar = tqdm(validation_set,
                         desc=f"  ├─ Evaluating on Curriculum C{stage_to_eval}",
-                        leave=True,
+                        leave=False,
                         bar_format="{l_bar}{bar:20}{r_bar}{bar:-20b}")
             for instance in pbar:
                 dag, k, proc_speeds, m_heft, m_ilp = (
@@ -125,7 +124,7 @@ class Validator:
 
                 while not done:
                     if not np.any(env.get_action_mask()): break
-                    pi, _ = mcts_evaluator.search(env, MCTS_SIMULATIONS, env.heft_makespan, dirichlet_epsilon=0.0)
+                    pi, _ = mcts_evaluator.search(env, config.VALIDATION_MCTS_SIMULATIONS, env.heft_makespan, dirichlet_epsilon=0.0)
                     if not pi: break
                     best_action = max(pi, key=pi.get)
                     _, _, done = env.step(best_action)

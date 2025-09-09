@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>训练监控仪表盘 - GNN-RL Scheduler</title>
+    <title>GNN-RL调度器：训练与评估仪表盘</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         /* --- 1. 全局样式 & 设计系统 --- */
@@ -45,6 +45,7 @@
             margin: 0;
             font-size: 28px;
             font-weight: 600;
+            text-align: center; /* 修改点：居中标题 */
         }
 
         .metrics-grid {
@@ -117,7 +118,6 @@
         .full-width { grid-column: 1 / -1; }
         @media (max-width: 1200px) { .charts-area { grid-template-columns: 1fr; } }
 
-        /* --- 3. 模态窗口 (全屏) --- */
         .modal-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background-color: rgba(0, 0, 0, 0.75);
@@ -147,7 +147,6 @@
         .modal-close:hover { transform: rotate(90deg); color: var(--text-color-primary); }
         #modal-chart-container { width: 100%; height: 100%; }
 
-        /* --- 4. 错误提示条 --- */
         .error-overlay {
             position: fixed; top: 0; left: 0; width: 100%;
             background-color: #d90429;
@@ -158,17 +157,17 @@
     </style>
 </head>
 <body>
-    <div id="error-bar" class="error-overlay">无法连接到监控服务器。正在尝试重新连接...</div>
+    <div id="error-bar" class="error-overlay">数据文件 status.json 未找到或格式错误。</div>
 
     <div class="container">
-        <header><h1>GNN-RL Scheduler 训练监控仪表盘</h1></header>
+        <header><h1>GNN-RL调度器：训练与评估仪表盘</h1></header>
 
         <div class="metrics-grid">
-            <div class="metric-card"><h3>Global Step</h3><p id="global-step">--</p></div>
-            <div class="metric-card"><h3>课程阶段</h3><p id="curriculum-stage">--</p></div>
-            <div class="metric-card"><h3>经验池大小</h3><p id="buffer-size">--</p></div>
-            <div class="metric-card"><h3>最新 SLR (当前)</h3><p id="latest-slr">--</p></div>
-            <div class="metric-card"><h3>最新最优间隙 (当前)</h3><p id="latest-gap">--</p></div>
+            <div class="metric-card"><h3>训练步数 (Global Step)</h3><p id="global-step">--</p></div>
+            <div class="metric-card"><h3>最终课程 (Final Curriculum)</h3><p id="curriculum-stage">--</p></div>
+            <div class="metric-card"><h3>经验池容量 (Buffer Size)</h3><p id="buffer-size">--</p></div>
+            <div class="metric-card"><h3>最终SLR (vs HEFT)</h3><p id="latest-slr">--</p></div>
+            <div class="metric-card"><h3>最终最优间隙 (vs ILP)</h3><p id="latest-gap">--</p></div>
         </div>
 
         <div class="charts-area">
@@ -188,7 +187,9 @@
     </div>
 
     <script>
-        // --- 1. 全局配置 & 颜色系统 ---
+        const GNN_RL_COLOR = '#0d6efd';
+        const HEFT_COLOR = '#fd7e14';
+        const ILP_COLOR = '#198754';
         const LOSS_TOTAL_COLOR = '#dc3545';
         const LOSS_POLICY_COLOR = '#6f42c1';
         const LOSS_VALUE_COLOR = '#20c997';
@@ -197,20 +198,16 @@
         let activeCharts = {};
         let modalChart = null;
 
-        // --- 2. 共享图表配置 ---
         const sharedChartOptions = {
-            responsive: true, maintainAspectRatio: false, animation: false,
-
-            // ======================== 核心修正区域 ========================
-            // 将交互模式从 'index' 改为 'x'
-            // 'index' 按数据点索引查找，导致不同课程的数据在提示框中重叠
-            // 'x' 按X轴坐标值查找，确保只显示与鼠标当前位置对齐的数据
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            hover: { animationDuration: 0 },
+            responsiveAnimationDuration: 0,
             interaction: {
                 mode: 'x',
                 intersect: false
             },
-            // =============================================================
-
             scales: {
                 x: {
                     type: 'linear',
@@ -235,7 +232,7 @@
                 }
             },
             elements: {
-                line: { tension: 0.3, borderWidth: 2 },
+                line: { tension: 0.3, borderWidth: 2, spanGaps: false },
                 point: {
                     radius: 0,
                     hoverRadius: 6,
@@ -244,36 +241,58 @@
             }
         };
 
-        // --- 3. 辅助函数 ---
-        function hexToRgba(hex, alpha) {
-            let r = 0, g = 0, b = 0;
-            if (hex.length == 4) {
-                r = "0x" + hex[1] + hex[1]; g = "0x" + hex[2] + hex[2]; b = "0x" + hex[3] + hex[3];
-            } else if (hex.length == 7) {
-                r = "0x" + hex[1] + hex[2]; g = "0x" + hex[3] + hex[4]; b = "0x" + hex[5] + hex[6];
-            }
-            return `rgba(${+r},${+g},${+b},${alpha})`;
-        }
-
-        // --- 4. 图表创建与初始化 ---
         function createChart(canvasId, options) {
             const chart = new Chart(document.getElementById(canvasId), options);
             activeCharts[canvasId] = chart;
             document.getElementById(canvasId).parentElement.addEventListener('click', () => openModal(chart));
         }
 
-        createChart('lossChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: '训练损失' } } }, data: { datasets: [
+        createChart('lossChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: '模型损失函数' } } }, data: { datasets: [
             { label: 'Total Loss', borderColor: LOSS_TOTAL_COLOR, data: [] },
             { label: 'Policy Loss', borderColor: LOSS_POLICY_COLOR, data: [] },
             { label: 'Value Loss', borderColor: LOSS_VALUE_COLOR, data: [] }
         ]}});
 
-        createChart('makespanChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: 'Makespan 跨课程详细对比' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, title: {...sharedChartOptions.scales.y.title, text: 'Makespan'}}}}, data: { datasets: [] }});
-        createChart('slrChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: 'SLR (vs HEFT) 跨课程对比' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, title: {...sharedChartOptions.scales.y.title, text: 'SLR (越低越好)'}}}}, data: { datasets: [] }});
-        createChart('gapChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: '最优间隙 (vs ILP) 跨课程对比' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, title: {...sharedChartOptions.scales.y.title, text: '最优间隙 (越低越好)'}}}}, data: { datasets: [] }});
-        createChart('winRateChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: '胜率 (vs HEFT) 跨课程对比' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, min: 0, max: 100, title: {...sharedChartOptions.scales.y.title, text: '胜率 (%)'}}}}, data: { datasets: [] }});
+        const makespanChartOptions = {
+            ...sharedChartOptions,
+            plugins: {
+                ...sharedChartOptions.plugins,
+                title: { ...sharedChartOptions.plugins.title, text: '调度性能对比：Makespan' },
+                legend: {
+                    ...sharedChartOptions.plugins.legend,
+                    onClick: (e, legendItem, legend) => {
+                        const clickedLabel = legendItem.text;
+                        const meta = legend.chart.getDatasetMeta(legendItem.datasetIndex);
+                        const isHidden = meta.hidden === null ? !legend.chart.data.datasets[legendItem.datasetIndex].hidden : !meta.hidden;
 
-        // --- 5. 模态窗口逻辑 ---
+                        legend.chart.data.datasets.forEach((dataset, i) => {
+                            if (dataset.label.startsWith(clickedLabel)) {
+                                chart.setDatasetVisibility(i, !isHidden);
+                            }
+                        });
+                        legend.chart.update();
+                    },
+                    labels: {
+                        ...sharedChartOptions.plugins.legend.labels,
+                        generateLabels: (chart) => {
+                            const uniqueLabels = new Map([
+                                ['GNN-RL', { text: 'GNN-RL', fillStyle: GNN_RL_COLOR, strokeStyle: GNN_RL_COLOR, hidden: false }],
+                                ['HEFT', { text: 'HEFT', fillStyle: HEFT_COLOR, strokeStyle: HEFT_COLOR, hidden: false }],
+                                ['ILP (Optimal)', { text: 'ILP (Optimal)', fillStyle: ILP_COLOR, strokeStyle: ILP_COLOR, hidden: false }]
+                            ]);
+                            return Array.from(uniqueLabels.values());
+                        }
+                    }
+                }
+            },
+            scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, title: {...sharedChartOptions.scales.y.title, text: 'Makespan'}}}
+        };
+        createChart('makespanChart', { type: 'line', options: makespanChartOptions, data: { datasets: [] } });
+
+        createChart('slrChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: '性能比率分析：SLR (vs HEFT)' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, title: {...sharedChartOptions.scales.y.title, text: '调度长度比 (SLR)'}}}}, data: { datasets: [] }});
+        createChart('gapChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: '最优性分析：Optimality Gap (vs ILP)' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, title: {...sharedChartOptions.scales.y.title, text: '最优间隙 (Optimality Gap)'}}}}, data: { datasets: [] }});
+        createChart('winRateChart', { type: 'line', options: { ...sharedChartOptions, plugins: { ...sharedChartOptions.plugins, title: { ...sharedChartOptions.plugins.title, text: '超越性分析：胜率 (vs HEFT)' } }, scales: {...sharedChartOptions.scales, y: {...sharedChartOptions.scales.y, min: 0, max: 100, title: {...sharedChartOptions.scales.y.title, text: '胜率 (%)'}}}}, data: { datasets: [] }});
+
         const modalContainer = document.getElementById('modal-container');
         modalContainer.addEventListener('click', (e) => { if (e.target.id === 'modal-container' || e.target.id === 'modal-close-btn') closeModal(); });
         function openModal(sourceChart) {
@@ -288,32 +307,22 @@
             if (modalChart) { modalChart.destroy(); modalChart = null; }
         }
 
-        // --- 6. 数据获取与更新 ---
-        function createOrUpdateDataset(chart, label, data, styleOptions) {
+        function createOrUpdateDataset(chart, label, data, color) {
             let dataset = chart.data.datasets.find(d => d.label === label);
             if (dataset) {
                 dataset.data = data;
             } else {
-                const newDataset = {
-                    label,
-                    data,
-                    borderColor: styleOptions.color,
-                    borderWidth: styleOptions.borderWidth || 2,
-                    borderDash: styleOptions.borderDash || [],
-                    fill: false
-                };
-                chart.data.datasets.push(newDataset);
+                chart.data.datasets.push({ label, data, borderColor: color, fill: false });
             }
         }
 
         async function fetchData() {
             try {
                 const response = await fetch('/api/data');
-                document.getElementById('error-bar').style.display = 'none';
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const data = await response.json();
+                document.getElementById('error-bar').style.display = 'none';
 
-                // 更新指标卡
                 document.getElementById('global-step').textContent = data.global_step;
                 document.getElementById('curriculum-stage').textContent = `C${data.current_curriculum}`;
                 if (data.system_metrics?.buffer_size.length > 0) {
@@ -325,41 +334,51 @@
                     document.getElementById('latest-gap').textContent = data.validation_metrics[currentStageKey].avg_gap.slice(-1)[0].toFixed(4);
                 }
 
-                // 为 Loss 图表设置数据（它使用类别轴，所以需要单独设置 labels）
-                activeCharts['lossChart'].data.labels = data.training_metrics.steps;
-                activeCharts['lossChart'].data.datasets[0].data = data.training_metrics.total_loss;
-                activeCharts['lossChart'].data.datasets[1].data = data.training_metrics.policy_loss;
-                activeCharts['lossChart'].data.datasets[2].data = data.training_metrics.value_loss;
+                const lossSteps = data.training_metrics.steps || [];
+                activeCharts['lossChart'].data.datasets[0].data = lossSteps.map((step, i) => ({ x: step, y: data.training_metrics.total_loss[i] }));
+                activeCharts['lossChart'].data.datasets[1].data = lossSteps.map((step, i) => ({ x: step, y: data.training_metrics.policy_loss[i] }));
+                activeCharts['lossChart'].data.datasets[2].data = lossSteps.map((step, i) => ({ x: step, y: data.training_metrics.value_loss[i] }));
 
                 const stageKeys = Object.keys(data.validation_metrics).sort((a,b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
 
-                // 为所有对比图（使用数值轴）准备并更新数据
+                const chartsToClear = ['makespanChart', 'slrChart', 'gapChart', 'winRateChart'];
+                chartsToClear.forEach(id => activeCharts[id].data.datasets = []);
+
                 stageKeys.forEach((stageKey, index) => {
                     const stageData = data.validation_metrics[stageKey];
                     const stageNum = stageKey.slice(1);
+                    const stageLabel = `C${stageNum}`;
                     const color = curriculumColorPalette[index % curriculumColorPalette.length];
 
-                    // 将数据点转换为 {x, y} 格式
-                    const agentMakespanData = stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_makespan_agent[i] }));
-                    const heftMakespanData = stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_makespan_heft[i] }));
-                    const ilpMakespanData = stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_makespan_ilp[i] < 0 ? null : stageData.avg_makespan_ilp[i] }));
+                    const makespanChart = activeCharts['makespanChart'];
+                    makespanChart.data.datasets.push({
+                        label: `GNN-RL (C${stageNum})`,
+                        data: stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_makespan_agent[i] })),
+                        borderColor: GNN_RL_COLOR,
+                        borderWidth: 3,
+                    });
+                    makespanChart.data.datasets.push({
+                        label: `HEFT (C${stageNum})`,
+                        data: stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_makespan_heft[i] })),
+                        borderColor: HEFT_COLOR,
+                        borderDash: [6, 3],
+                    });
+                    makespanChart.data.datasets.push({
+                        label: `ILP (Optimal) (C${stageNum})`,
+                        data: stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_makespan_ilp[i] < 0 ? null : stageData.avg_makespan_ilp[i] })),
+                        borderColor: ILP_COLOR,
+                        borderDash: [2, 2],
+                    });
 
                     const slrData = stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_slr[i] }));
                     const gapData = stageData.steps.map((step, i) => ({ x: step, y: stageData.avg_gap[i] < 0 ? null : stageData.avg_gap[i] }));
                     const winRateData = stageData.steps.map((step, i) => ({ x: step, y: stageData.win_rate[i] * 100 }));
 
-                    // 为Makespan图创建三条曲线
-                    createOrUpdateDataset(activeCharts['makespanChart'], `Agent - C${stageNum}`, agentMakespanData, { color: color, borderWidth: 3 });
-                    createOrUpdateDataset(activeCharts['makespanChart'], `HEFT - C${stageNum}`, heftMakespanData, { color: color, borderDash: [6, 3] });
-                    createOrUpdateDataset(activeCharts['makespanChart'], `ILP - C${stageNum}`, ilpMakespanData, { color: color, borderDash: [2, 2] });
-
-                    // 为其他对比图创建各自的曲线
-                    createOrUpdateDataset(activeCharts['slrChart'], `SLR - C${stageNum}`, slrData, { color: color });
-                    createOrUpdateDataset(activeCharts['gapChart'], `Gap - C${stageNum}`, gapData, { color: color });
-                    createOrUpdateDataset(activeCharts['winRateChart'], `Win Rate - C${stageNum}`, winRateData, { color: color });
+                    createOrUpdateDataset(activeCharts['slrChart'], stageLabel, slrData, color);
+                    createOrUpdateDataset(activeCharts['gapChart'], stageLabel, gapData, color);
+                    createOrUpdateDataset(activeCharts['winRateChart'], stageLabel, winRateData, color);
                 });
 
-                // 一次性更新所有图表
                 Object.values(activeCharts).forEach(chart => chart.update('none'));
 
             } catch (error) {
@@ -368,8 +387,8 @@
             }
         }
 
-        setInterval(fetchData, 3000);
         window.onload = fetchData;
+
     </script>
 </body>
 </html>
